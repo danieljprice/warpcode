@@ -1,5 +1,5 @@
-This is a code for solving the diffusion equation for warped discs
-as first derived by Pringle (1992) and with the additional
+This is a code for solving the diffusion equation for warped accretion discs
+in astrophysics as first derived by Pringle (1992) and with the additional
 precession term from Ogilvie (1999). It is modified from an
 original code by Jim Pringle, passed down through Giuseppe Lodato
 and rewritten by Daniel Price. The code has been extensively rewritten
