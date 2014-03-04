@@ -1,4 +1,13 @@
-      subroutine get_alpha_gordon(alpha,alphab,psi,alpha1,alpha2,alpha3)
+      module gordon
+      
+      public :: get_alpha_gordon
+      
+      private
+      
+      contains
+
+      subroutine get_alpha_gordon(alpha,alphab,psi,alpha1,alpha2,alpha3,
+     &                            fail)
 
 c Integrates the dimensionless ODEs for a nonlinear warp in a polytropic
 c disc.
@@ -56,14 +65,15 @@ c <f6>=1, which is necessary for the evaluation of Q_1, Q_2 and Q_3.
 c Hence the need for y(22).
 
       implicit none
-      real*8 psi,alpha,alphab,alpha1,alpha2,alpha3
+      real*8, intent(in)   :: psi,alpha,alphab
+      real*8, intent(out)  :: alpha1,alpha2,alpha3
+      logical, intent(out) :: fail
 
       integer nmu
       parameter (nmu=5)
       real*8 mu(nmu)
       character*15 filename
 
-      logical fail
       integer i,imax,nmvary,ndmu,indx(4)
       real*8 x1,x2,y1(28),y2(28),lambda(4),acc,mm(4),m(4,4),del(4),
      +  delta,dmu,mu0,d
@@ -72,7 +82,7 @@ c Hence the need for y(22).
 
       parameter (imax=50,acc=1.0d-8)
 
-      
+      fail = .false.
       mu(1) = psi
       !print *,'Enter psi'
       !read *,mu(1)
@@ -146,7 +156,7 @@ c     +  dreal(temp),dimag(temp)
           call odeint(x1,x2,y1,y2,lambda,nmu,mu,.false.,fail)
           if (fail) then
             write (*,'(a13)') 'odeint failed'
-            stop
+            return
           endif
           mm(1)=y2(1)-lambda(1)
           mm(2)=y2(2)-lambda(2)
@@ -192,7 +202,8 @@ c     +  dreal(temp),dimag(temp)
         enddo
         if (.not.converged) then
            write (*,*) 'Failed to converge: alpha=',alpha,' psi=',psi
-           stop
+           fail = .true.
+           return
         endif
 
 ! 1    enddo
@@ -260,7 +271,7 @@ C
       SUBROUTINE qstep(x,y,lambda,nmu,mu,htry,hnext,eps,hmax,good,fail)
       implicit none
       LOGICAL good,fail
-      INTEGER nmu
+      INTEGER nmu,ierr
       REAL*8 x,y(28),lambda(4),mu(nmu),htry,hnext,eps,hmax
 C
       INTEGER i
@@ -268,7 +279,13 @@ C
       PARAMETER (safety=0.9D0,errmax=1.845281D3,errmin=1.889568D-4)
       h=htry
       good=.TRUE.
- 1    CALL ckstep(x,y,lambda,nmu,mu,h,ynext,yerror)
+      fail=.false.
+ 1    CALL ckstep(x,y,lambda,nmu,mu,h,ynext,yerror,ierr)
+      if (ierr /= 0) then
+         fail = .true.
+         print*,' got ckstep failure',ierr
+         return
+      endif
       error=(DMAX1(DABS(yerror(1)),DABS(yerror(2)),DABS(yerror(3)),
      +  DABS(yerror(4)))/
      +  DMAX1(DABS(y(1)),DABS(y(2)),DABS(y(3)),DABS(y(4))))/eps
@@ -302,10 +319,11 @@ C
       ENDIF
       END
 
-      SUBROUTINE ckstep(x,y,lambda,nmu,mu,h,ynext,yerror)
+      SUBROUTINE ckstep(x,y,lambda,nmu,mu,h,ynext,yerror,ierr)
       implicit none
       INTEGER nmu
       REAL*8 x,y(28),lambda(4),mu(nmu),h,ynext(28),yerror(28)
+      integer, intent(out) :: ierr
 C
       INTEGER i
       REAL*8 a2,a3,a4,a5,a6,b21,b31,b32,b41,b42,b43,b51,b52,b53,b54,b61,
@@ -320,28 +338,34 @@ C
      +  c3=250.0D0/621.0D0,c4=125.0D0/594.0D0,c6=512.0D0/1771.0D0,
      +  d1=c1-2825.0D0/27648.0D0,d3=c3-18575.0D0/48384.0D0,
      +  d4=c4-13525.0D0/55296.0D0,d5=-277.0D0/14336.0D0,d6=c6-0.25D0)
-      CALL derivs(x,y,lambda,nmu,mu,f1)
+      CALL derivs(x,y,lambda,nmu,mu,f1,ierr)
+      if (ierr /= 0) return
       DO i=1,28
         ytemp(i)=y(i)+h*b21*f1(i)
       ENDDO
-      CALL derivs(x+a2*h,ytemp,lambda,nmu,mu,f2)
+      CALL derivs(x+a2*h,ytemp,lambda,nmu,mu,f2,ierr)
+      if (ierr /= 0) return
       DO i=1,28
         ytemp(i)=y(i)+h*(b31*f1(i)+b32*f2(i))
       ENDDO
-      CALL derivs(x+a3*h,ytemp,lambda,nmu,mu,f3)
+      CALL derivs(x+a3*h,ytemp,lambda,nmu,mu,f3,ierr)
+      if (ierr /= 0) return
       DO i=1,28
         ytemp(i)=y(i)+h*(b41*f1(i)+b42*f2(i)+b43*f3(i))
       ENDDO
-      CALL derivs(x+a4*h,ytemp,lambda,nmu,mu,f4)
+      CALL derivs(x+a4*h,ytemp,lambda,nmu,mu,f4,ierr)
+      if (ierr /= 0) return
       DO i=1,28
         ytemp(i)=y(i)+h*(b51*f1(i)+b52*f2(i)+b53*f3(i)+b54*f4(i))
       ENDDO
-      CALL derivs(x+a5*h,ytemp,lambda,nmu,mu,f5)
+      CALL derivs(x+a5*h,ytemp,lambda,nmu,mu,f5,ierr)
+      if (ierr /= 0) return
       DO i=1,28
         ytemp(i)=y(i)+h*(b61*f1(i)+b62*f2(i)+b63*f3(i)+b64*f4(i)+
      +    b65*f5(i))
       ENDDO
-      CALL derivs(x+a6*h,ytemp,lambda,nmu,mu,f6)
+      CALL derivs(x+a6*h,ytemp,lambda,nmu,mu,f6,ierr)
+      if (ierr /= 0) return
       DO i=1,28
         ynext(i)=y(i)+h*(c1*f1(i)+c3*f3(i)+c4*f4(i)+c6*f6(i))
         yerror(i)=h*(d1*f1(i)+d3*f3(i)+d4*f4(i)+d5*f5(i)+d6*f6(i))
@@ -349,14 +373,17 @@ C
       RETURN
       END
 
-      SUBROUTINE derivs(x,y,lambda,nmu,mu,f)
+      SUBROUTINE derivs(x,y,lambda,nmu,mu,f,ierr)
       implicit none
       INTEGER nmu
       REAL*8 x,y(28),lambda(4),mu(nmu),f(28)
+      integer, intent(out) :: ierr
 C
+      ierr = 0
       if ((1.0d0+y(1)).lt.0.0d0) then
         write (*,'(a23)') 'Warning: disc explodes!'
-        stop
+        ierr = 1
+        return
       endif
       f(1)=(mu(3)+1.0d0)*y(3)*(1.0d0+y(1))
       f(2)=y(3)*y(2)+2.0d0*y(4)+(1.0d0+(mu(5)+(mu(4)/3.0d0))*y(3))*
@@ -586,3 +613,5 @@ C
 
       return
       end
+
+      end module gordon

@@ -133,24 +133,31 @@ end subroutine update_variables
 !
 ! compute the diffusion/precession coefficients from Ogilvie (1999) theory
 !
-subroutine get_coeffs(alpha,psi,nu1,nu2,nu3,nr)
+subroutine get_coeffs(alpha,psi,nu1,nu2,nu3,nr,fail)
+ use gordon, only:get_alpha_gordon
  integer, intent(in) :: nr
  real(kind=db), intent(in) :: alpha
  real(kind=db), dimension(nr), intent(in)  :: psi
  real(kind=db), dimension(nr), intent(out) :: nu1,nu2,nu3
+ logical, intent(out) :: fail
  real(kind=db) :: alphab,alpha1,alpha2,alpha3,psii
+ real(kind=db) :: minalpha1
+ logical, dimension(nr) :: ifail
  integer :: i
+ ifail = .false.
 !
 ! compute the nu1, nu2 and nu3 diffusion/precession coefficients
 ! 
+ minalpha1 = 1.
  !$omp parallel do default(none) schedule(dynamic) &
  !$omp private(i,alphab,alpha1,alpha2,alpha3,psii) &
- !$omp shared(nr,psi,nu1,nu2,nu3,alpha) 
+ !$omp shared(nr,psi,nu1,nu2,nu3,alpha,ifail) !&
+ !!$omp reduction(min:minalpha1)
  do i=1,nr
     alphab = 5./3.*alpha
     psii = max(psi(i),1.d-9)
     if (psii > 0.1) then
-       call get_alpha_gordon(alpha,alphab,psii,alpha1,alpha2,alpha3)
+       call get_alpha_gordon(alpha,alphab,psii,alpha1,alpha2,alpha3,ifail(i))
     else
        ! Eq. 136 in Ogilvie 1999
        alpha1 = alpha - 2./3.*(1. - 17.*alpha**2 + 21.*alpha**4)/(4.*alpha*(4. + alpha**2))*psii**2
@@ -159,11 +166,14 @@ subroutine get_coeffs(alpha,psi,nu1,nu2,nu3,nr)
        ! Eq. 12 in Ogilvie & Dubus (2001)
        alpha3 = 1.5*(1. - 2.*alpha**2)/(4. + alpha**2)
     endif
+!    minalpha1 = min(alpha1,minalpha1)
     nu1(i) = alpha1/alpha
     nu2(i) = alpha2/alpha
     nu3(i) = alpha3/alpha
  enddo
  !$omp end parallel do
+ fail = any(ifail(1:nr))
+! print*,' min alpha1 = ',minalpha1 
 
 end subroutine get_coeffs
 
@@ -225,7 +235,7 @@ end subroutine get_timestep
 !
 ! advance one timestep: this is the main routine specifying the equations
 !
-pure subroutine advance(dt,r,rsqrt,r32,dr,sigma,nu1,nu2,nu3,vel2,dldr,unitl,bigL,nr,nr2)
+pure subroutine advance(dt,r,rsqrt,r32,dr,sigma,nu1,nu2,nu3,vel2,dldr,unitl,bigL,t1,t2,t3,t4,nr,nr2)
  integer, intent(in) :: nr,nr2
  real(kind=db), intent(in) :: dt
  real(kind=db), dimension(nr2), intent(in) :: r,rsqrt,r32,dr
@@ -233,6 +243,7 @@ pure subroutine advance(dt,r,rsqrt,r32,dr,sigma,nu1,nu2,nu3,vel2,dldr,unitl,bigL
  real(kind=db), dimension(3,nr2), intent(in)    :: unitl,dldr
  real(kind=db), dimension(3,nr),  intent(inout) :: bigL
  real(kind=db), dimension(3,nr) :: bigLnew
+ real(kind=db), dimension(3,nr), intent(out) :: t1,t2,t3,t4
  integer :: i,k
  real(kind=db), dimension(3) :: term1,term2,term3,term4,lcrossdldrp1,lcrossdldrm1
  real(kind=db) :: ri,dri,c1,c2,c3,c4
@@ -289,6 +300,10 @@ pure subroutine advance(dt,r,rsqrt,r32,dr,sigma,nu1,nu2,nu3,vel2,dldr,unitl,bigL
 ! update the angular momentum vector
 !   
     bigLnew(:,i) = bigL(:,i) + dt*(term1(:) + term2(:) + term3(:) + term4(:))
+    t1(:,i) = term1(:)
+    t2(:,i) = term2(:)
+    t3(:,i) = term3(:)
+    t4(:,i) = term4(:)
  enddo
 
  bigL = bigLnew
@@ -338,83 +353,117 @@ end subroutine decide_to_write_output
 !
 ! output results to file
 !
-subroutine write_output(nout,time,r,sig0,sigma,unitl,psi,nr,nr2)
+subroutine write_output(nout,time,r,sig0,sigma,unitl,psi,nu1,nu2,nu3,t1,t2,t3,t4,nr,nr2,fileprefix)
  integer, intent(in) :: nr,nr2
  integer, intent(inout) :: nout
  real(kind=db), intent(in) :: time,sig0
  real(kind=db), dimension(nr2),   intent(in) :: r
- real(kind=db), dimension(nr),    intent(in) :: sigma,psi
- real(kind=db), dimension(3,nr2), intent(in) :: unitl
- integer :: i,lu,ierr
- character(len=8) :: filename
+ real(kind=db), dimension(nr),    intent(in) :: sigma,psi,nu1,nu2,nu3
+ real(kind=db), dimension(3,nr2), intent(in) :: unitl,t1,t2,t3,t4
+ character(len=*), intent(in) :: fileprefix
+ integer :: i,lu,ierr,tu(5),j
+ character(len=len(fileprefix)+13) :: filename
  
- write(filename,"(a,i3.3)") 'dump',nout
+ write(filename,"(a,i3.3)") trim(fileprefix),nout
  open(newunit=lu,file=filename,status='replace',iostat=ierr)
  if (ierr /= 0) then
     print*,' error writing to '//trim(filename)
     return
  endif
- 
  print "(a,f12.5,a)",' t = ',time,' writing to '//trim(filename)
- write(lu,"(6(a10,1x))") 'r','sigma','lx','ly','lz','psi'
+ !do i=1,5
+ !   write(filename,"(a,i3.3,a,i1)") trim(fileprefix),nout,'-term',i
+ !   open(newunit=tu(i),file=filename,status='replace',iostat=ierr)
+ !   if (ierr /= 0) then
+ !      print*,' error writing to '//trim(filename)
+ !      return
+ !   endif
+ !enddo
+ 
+ write(lu,"('#',9(a13,1x))") 'r','sigma','lx','ly','lz','psi','nu_1','nu_2','nu_3'
  write(lu,*) time
  do i=1,nr
-    write(lu,"(6(es13.6,1x))") r(2*i),sig0*sigma(i),unitl(1,2*i),unitl(2,2*i),unitl(3,2*i),psi(i)
+    write(lu,"(9(es13.6,1x))") r(2*i),sig0*sigma(i),unitl(1,2*i),unitl(2,2*i),unitl(3,2*i),psi(i),nu1(i),nu2(i)*psi(i),nu3(i)
+    
+    !write(tu(1),"(5(es13.6,1x))") r(2*i),t1(:,i),norm2(t1(:,i))
+    !write(tu(2),"(5(es13.6,1x))") r(2*i),t2(:,i),norm2(t2(:,i))
+    !write(tu(3),"(5(es13.6,1x))") r(2*i),t3(:,i),norm2(t3(:,i))
+    !write(tu(4),"(5(es13.6,1x))") r(2*i),t4(:,i),norm2(t4(:,i))
+    !write(tu(5),"(5(es13.6,1x))") r(2*i),psi(i),psi(i),psi(i),psi(i)
  enddo
  close(unit=lu)
+ !do j=1,5
+ !   close(tu(j))
+ !enddo
  nout = nout + 1
  
 end subroutine write_output
 !
 ! main driver routine
 !
-subroutine evolve(t_end,dt_out)
- real(kind=db), intent(in) :: t_end,dt_out
- integer, parameter :: nr = 201
- integer, parameter :: nr2 = 2*nr
- real(kind=db), dimension(nr2) :: r,dr,rsqrt,r32
+subroutine evolve(t_end,dt_out,psimax,alpha,fileprefix,nr,fail)
+ real(kind=db), intent(in) :: t_end,dt_out,psimax,alpha
+ character(len=*), intent(in) :: fileprefix
+ integer, intent(in)  :: nr
+ logical, intent(out) :: fail
+! integer, parameter :: nr2 = 2*nr
+ real(kind=db), dimension(2*nr) :: r,dr,rsqrt,r32
  real(kind=db), dimension(nr)  :: sigma,nu1,nu2,nu3,vel2,psi
- real(kind=db), dimension(3,nr)  :: bigL
- real(kind=db), dimension(3,nr2) :: unitl,dldr
- real(kind=db) :: R_in,R_out,warp_ampl,p_index,courant_fac,alpha
+ real(kind=db), dimension(3,nr)  :: bigL,t1,t2,t3,t4
+ real(kind=db), dimension(3,2*nr) :: unitl,dldr
+ real(kind=db) :: R_in,R_out,warp_ampl,p_index,courant_fac
  real(kind=db) :: time,tvisc,sig0,dt,factor,hoverr
  logical :: do_output
- integer :: nout
+ integer :: nout,nr2
+ real(kind=db) :: r_warp,drwarp,term
+ real(kind=db), parameter :: pi = 3.14159265258979d0
  
+ fail = .false.
  R_in = 0.5d0
  R_out = 10.5d0
- warp_ampl = 0.05d0
+ 
+ drwarp = 1.5
+ r_warp = 5.
+! psimax = 0.5
+ term = pi*r_warp/(4.*drwarp)
+ warp_ampl = psimax/(term*sqrt(1. + (psimax/(2.*term))**2))
+! warp_ampl = 0.5d0
+ print*,warp_ampl
  p_index = 1.5d0
- alpha = 0.05d0
+! alpha = 0.1d0
  courant_fac = 0.1  ! timestep constraint
  sig0   = 2.679581e-6/0.305 ! normalisation of surface density, for printing only
  hoverr = 0.02 ! H/R at r=1: ONLY used to convert the time, see below
  factor = alpha*hoverr**2
  nout = 0
+ nr2 = 2*nr
 
  call set_grid(R_in,R_out,r,dr,rsqrt,r32,nr2)
  call initial_conds(r,p_index,R_in,warp_ampl,sigma,unitl,bigL,nr,nr2)
  call update_variables(r,dr,bigL,sigma,psi,unitl,dldr,nr,nr2)
- call get_coeffs(alpha,psi,nu1,nu2,nu3,nr)
+ call get_coeffs(alpha,psi,nu1,nu2,nu3,nr,fail)
+ if (fail) return
  call get_vel(r,nu1,nu2,dldr,vel2,nr,nr2)
 
  time = 0.
  tvisc = 0.
- call write_output(nout,tvisc,r,sig0,sigma,unitl,psi,nr,nr2)
+ call advance(0.d0,r,rsqrt,r32,dr,sigma,nu1,nu2,nu3,vel2,dldr,unitl,bigL,t1,t2,t3,t4,nr,nr2)
+ call write_output(nout,tvisc,r,sig0,sigma,unitl,psi,nu1,nu2,nu3,t1,t2,t3,t4,nr,nr2,fileprefix)
 
  do while (tvisc < t_end)
     call get_timestep(dt,courant_fac,dr,sigma,vel2,nu1,nu2,nu3,nr,nr2)
     call decide_to_write_output(time,factor,dt_out,dt,do_output)
-    call advance(dt,r,rsqrt,r32,dr,sigma,nu1,nu2,nu3,vel2,dldr,unitl,bigL,nr,nr2)
+    call advance(dt,r,rsqrt,r32,dr,sigma,nu1,nu2,nu3,vel2,dldr,unitl,bigL,t1,t2,t3,t4,nr,nr2)
 
     call update_variables(r,dr,bigL,sigma,psi,unitl,dldr,nr,nr2)
-    call get_coeffs(alpha,psi,nu1,nu2,nu3,nr)
+    call get_coeffs(alpha,psi,nu1,nu2,nu3,nr,fail)
+    if (fail) return
     call get_vel(r,nu1,nu2,dldr,vel2,nr,nr2)
 
     time = time + dt
     tvisc = time/factor
 
-    if (do_output) call write_output(nout,tvisc,r,sig0,sigma,unitl,psi,nr,nr2)
+    if (do_output) call write_output(nout,tvisc,r,sig0,sigma,unitl,psi,nu1,nu2,nu3,t1,t2,t3,t4,nr,nr2,fileprefix)
  enddo
 
 end subroutine evolve
